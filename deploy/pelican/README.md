@@ -15,9 +15,9 @@ https://raw.githubusercontent.com/Just-Cole/paracord/main/deploy/pelican/egg-par
 
 1. Create a server from the **Paracord** egg and give it **one port** (allocation).
    Paracord listens on that port automatically.
-2. Give it at least **2 GB of memory** and some disk (about 3 GB while
-   installing). The install step compiles Rust, which needs it. Running Paracord
-   afterwards needs very little.
+2. Give it at least **2 GB of memory** and **5 GB of disk**. The install step
+   compiles Rust and keeps its build cache in `.build/` (about 1.5–2 GB) so later
+   updates are much faster. Running Paracord itself needs very little.
 3. Wait for the install to finish. The first one takes roughly 5–15 minutes
    depending on the CPU. You can watch it in the server console.
 4. Start the server. It's up when the console says `Paracord listening on`.
@@ -27,7 +27,8 @@ backups.
 
 What the install does: see [install.sh](install.sh). It runs in the official
 `rust:1-bookworm` image, downloads Trunk, builds the web client and a static
-Linux binary, and copies only `paracord` (plus a `VERSION` file) into the server.
+Linux binary, and installs `paracord` (plus a `VERSION` file) into the server.
+Deleting `.build/` is safe; the next reinstall just takes longer.
 
 ## 3. Point the domain at it
 
