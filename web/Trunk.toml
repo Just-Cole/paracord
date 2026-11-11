@@ -3,6 +3,11 @@ target = "index.html"
 dist = "dist"
 filehash = true
 
+# Pin the optimizer so every machine (this PC, the Pelican installer) uses the
+# same one.
+[tools]
+wasm_opt = "version_131"
+
 [watch]
 # Rebuild when the shared types change too.
 watch = [".", "../shared"]

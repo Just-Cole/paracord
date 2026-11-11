@@ -21,4 +21,11 @@ opt-level = 2
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
+# "debuginfo", not true: full stripping also removes the WebAssembly
+# target_features section, and then wasm-bindgen/wasm-opt can't tell which
+# features the web client uses (wasm-opt fails on newer Rust).
+strip = "debuginfo"
+
+# The site ships to every browser, so favour a small download over raw speed.
+[profile.release.package.paracord-web]
+opt-level = "z"
