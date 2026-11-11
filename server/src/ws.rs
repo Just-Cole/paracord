@@ -111,20 +111,7 @@ async fn handle(state: &AppState, user: &User, tx: &mpsc::Sender<String>, event:
             if !state.allow(&format!("typing:{}", user.id), 4, Duration::from_secs(2)) {
                 return;
             }
-            let user_id = user.id.clone();
-            let (ch, cv) = (channel_id.clone(), conversation_id.clone());
-            let audience = state
-                .db(move |c| {
-                    if let Some(id) = ch {
-                        let (community_id, _) = require_channel(c, &id, &user_id)?;
-                        Ok(community_member_ids(c, &community_id)?)
-                    } else if let Some(id) = cv {
-                        let other = require_conversation(c, &id, &user_id)?;
-                        Ok(vec![other])
-                    } else {
-                        Ok(Vec::new())
-                    }
-                })
+            let audience = typing_audience(state, &user.id, channel_id.as_deref(), conversation_id.as_deref())
                 .await
                 .unwrap_or_default();
             let audience: Vec<String> = audience.into_iter().filter(|id| *id != user.id).collect();
@@ -140,9 +127,30 @@ async fn handle(state: &AppState, user: &User, tx: &mpsc::Sender<String>, event:
     }
 }
 
+/// Who should see this user typing: the channel's community, or the other person.
+async fn typing_audience(
+    state: &AppState,
+    user_id: &str,
+    channel_id: Option<&str>,
+    conversation_id: Option<&str>,
+) -> ApiResult<Vec<String>> {
+    let mut c = state.conn().await?;
+    if let Some(id) = channel_id {
+        let (community_id, _) = require_channel(&mut c, id, user_id).await?;
+        community_member_ids(&mut c, &community_id).await
+    } else if let Some(id) = conversation_id {
+        Ok(vec![require_conversation(&mut c, id, user_id).await?])
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 async fn broadcast_presence(state: &AppState, user_id: &str, online: bool) {
-    let id = user_id.to_string();
-    match state.db(move |c| Ok(related_user_ids(c, &id)?)).await {
+    let lookup = async {
+        let mut c = state.conn().await?;
+        related_user_ids(&mut c, user_id).await
+    };
+    match lookup.await {
         Ok(audience) => state.hub.send(
             &audience,
             &ServerEvent::Presence {

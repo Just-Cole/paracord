@@ -22,7 +22,3 @@ opt-level = 2
 lto = true
 codegen-units = 1
 strip = true
-
-# The site ships to every browser, so favour a small download over raw speed.
-[profile.release.package.paracord-web]
-opt-level = "z"

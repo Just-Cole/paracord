@@ -20,10 +20,10 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 getrandom = "0.3"
 hex = "0.4"
 mime_guess = "2"
-rusqlite = { version = "0.37", features = ["bundled"] }
 rust-embed = "8"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.7.1", features = ["compression-gzip", "compression-br"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "mysql", "migrate", "macros", "mysql-rsa"] }

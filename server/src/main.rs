@@ -1,3 +1,9 @@
+/// Builds SQL text at runtime. Only for queries assembled from fixed pieces
+/// (column lists, table names); user input always goes through `.bind()`.
+macro_rules! sql {
+    ($($t:tt)*) => { sqlx::AssertSqlSafe(format!($($t)*)) };
+}
+
 mod access;
 mod auth;
 mod config;
@@ -11,40 +17,53 @@ mod web;
 mod ws;
 
 use std::net::SocketAddr;
+use std::process::ExitCode;
 use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::state::AppState;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("paracord=info")),
         )
         .init();
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            error!("{message}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    let cfg = Config::from_env();
-    std::fs::create_dir_all(&cfg.data_dir)?;
-    let db_path = cfg.data_dir.join("paracord.db");
-    let conn = db::open(&db_path)?;
-    info!("Database: {}", db_path.display());
+async fn run() -> Result<(), String> {
+    let cfg = Config::from_env()?;
+    let pool = db::connect(&cfg.db)
+        .await
+        .map_err(|e| format!("Database setup failed: {e}"))?;
 
-    let state = AppState::new(cfg.clone(), conn);
+    let state = AppState::new(cfg.clone(), pool);
     spawn_session_cleanup(state.clone());
 
     let app = routes::router(state.clone());
     let addr = SocketAddr::new(cfg.bind, cfg.port);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Can't listen on {addr}: {e}"))?;
     // Pelican watches the console for this line to mark the server as started.
     info!("Paracord listening on http://{addr}");
 
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .await
+        .map_err(|e| format!("Server error: {e}"))?;
+    state.pool.close().await;
     info!("Paracord stopped");
     Ok(())
 }
@@ -54,15 +73,12 @@ fn spawn_session_cleanup(state: AppState) {
         let mut tick = tokio::time::interval(Duration::from_secs(60 * 60));
         loop {
             tick.tick().await;
-            let now = util::now_ms();
-            let result = state
-                .db(move |c| {
-                    c.execute("DELETE FROM sessions WHERE expires_at < ?1", [now])?;
-                    Ok(())
-                })
+            let result = sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
+                .bind(util::now_ms())
+                .execute(&state.pool)
                 .await;
             if let Err(error) = result {
-                warn!("session cleanup failed: {error:?}");
+                warn!("session cleanup failed: {error}");
             }
         }
     });

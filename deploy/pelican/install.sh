@@ -3,8 +3,8 @@
 # container with the server's files mounted at /mnt/server.
 #
 # It clones the repo, builds the web client and a static Linux binary, and
-# installs the binary into the server. data/ (the database) is never touched,
-# so "Reinstall" is how you update.
+# installs the binary into the server. Your data lives in MySQL, which this
+# script never touches, so "Reinstall" is how you update.
 #
 # The source and build cache live in /mnt/server/.build (about 1.5 GB). They
 # stay between reinstalls so updates only recompile what changed. /tmp is not
@@ -70,7 +70,6 @@ echo "==> Building the server"
 cargo build --release --locked -p paracord-server --target "$TARGET"
 
 echo "==> Installing"
-mkdir -p /mnt/server/data
 install -m 755 "$CARGO_TARGET_DIR/$TARGET/release/paracord" /mnt/server/paracord
 git rev-parse --short HEAD > /mnt/server/VERSION
 echo "Paracord $(cat /mnt/server/VERSION) installed."

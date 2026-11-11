@@ -3,10 +3,11 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rusqlite::Connection;
+use sqlx::MySqlPool;
+use sqlx::pool::PoolConnection;
 
 use crate::config::Config;
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiResult;
 use crate::realtime::Hub;
 
 #[derive(Clone)]
@@ -15,7 +16,7 @@ pub struct AppState(Arc<Inner>);
 pub struct Inner {
     pub cfg: Config,
     pub hub: Hub,
-    db: Arc<Mutex<Connection>>,
+    pub pool: MySqlPool,
     limiter: Mutex<HashMap<String, VecDeque<Instant>>>,
 }
 
@@ -27,29 +28,18 @@ impl Deref for AppState {
 }
 
 impl AppState {
-    pub fn new(cfg: Config, conn: Connection) -> Self {
+    pub fn new(cfg: Config, pool: MySqlPool) -> Self {
         Self(Arc::new(Inner {
             cfg,
             hub: Hub::default(),
-            db: Arc::new(Mutex::new(conn)),
+            pool,
             limiter: Mutex::new(HashMap::new()),
         }))
     }
 
-    /// Runs database work on a blocking thread. SQLite has one writer anyway,
-    /// so a single shared connection keeps things simple.
-    pub async fn db<T, F>(&self, work: F) -> ApiResult<T>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> ApiResult<T> + Send + 'static,
-    {
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut conn = db.lock().map_err(|_| ApiError::internal("database lock poisoned"))?;
-            work(&mut conn)
-        })
-        .await
-        .map_err(ApiError::internal)?
+    /// A database connection from the pool.
+    pub async fn conn(&self) -> ApiResult<PoolConnection<sqlx::MySql>> {
+        Ok(self.pool.acquire().await?)
     }
 
     /// Sliding-window rate limit: at most `max` hits per `window` for `key`.

@@ -5,7 +5,7 @@ updates, typing indicators and presence. Everything is Rust:
 
 | Part | Folder | What it is |
 | --- | --- | --- |
-| Server | `server/` | Axum. Serves the API (`/api/...`), the live WebSocket (`/ws`) and the web client, all on one port. SQLite database in `data/paracord.db`. |
+| Server | `server/` | Axum. Serves the API (`/api/...`), the live WebSocket (`/ws`) and the web client, all on one port. Stores everything in MySQL or MariaDB; tables are created automatically on first start. |
 | Web client | `web/` | Leptos, compiled to WebAssembly with Trunk. Built into `web/dist/` and baked into the server binary for release builds. |
 | Shared | `shared/` | Types and input rules both sides use, so the browser and server can't disagree. |
 
@@ -21,12 +21,17 @@ button), and DM anyone they share a community with.
 
 ## Run it on this PC
 
+You need a MySQL 8 or MariaDB 10.5+ database Paracord can use (an empty one is
+fine). Build the site once:
+
 ```bash
 cd web && trunk build --release && cd ..
 ```
 
-```bash
-cargo run -p paracord-server
+Then start the server with the database details (PowerShell):
+
+```powershell
+$env:DB_HOST="localhost"; $env:DB_DATABASE="paracord"; $env:DB_USERNAME="paracord"; $env:DB_PASSWORD="..."; cargo run -p paracord-server
 ```
 
 Open <http://localhost:3000>. Stop with Ctrl+C.
@@ -43,18 +48,19 @@ All optional, set as environment variables:
 | --- | --- | --- |
 | `PORT` | `SERVER_PORT`, else `3000` | Port to listen on. Pelican sets `SERVER_PORT` for you. |
 | `BIND` | `0.0.0.0` | Address to listen on. |
-| `DATA_DIR` | `data` | Folder for `paracord.db`. Back this folder up. |
+| `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` | port `3306` | The MySQL/MariaDB database. Required. |
+| `DATABASE_URL` | none | Alternative to the `DB_*` settings: `mysql://user:password@host:3306/database` (special characters in the password must be %-encoded; a `jdbc:mysql://` URL also works). |
 | `TRUST_PROXY` | `127.0.0.1,::1` | Proxies whose forwarded-IP headers are believed (used for sign-in rate limits). |
 | `PUBLIC_ORIGINS` | none | Your public site address, e.g. `https://paracord.example.com`. |
 | `SECURE_COOKIES` | `0` | `1` to mark the sign-in cookie HTTPS-only. Use it behind HTTPS. |
 | `RUST_LOG` | `paracord=info` | Log detail. |
 
-## Cloudflare Tunnel
+## Behind Cloudflare
 
-The site, API and WebSocket now share **one** address and port, so a single
-route is enough: `paracord.obsidianinteractive.site → http://localhost:3000`.
-The old `api.` route is no longer used. When running behind the tunnel, set
-`SECURE_COOKIES=1` and `PUBLIC_ORIGINS=https://paracord.obsidianinteractive.site`.
+The site, API and WebSocket share **one** address and port, so one hostname is
+enough (for example `paracord.crafternodes.space`), via a tunnel or a proxied
+DNS record. Behind HTTPS, set `SECURE_COOKIES=1` and
+`PUBLIC_ORIGINS=https://paracord.crafternodes.space`.
 
 ## Hosting on Pelican
 

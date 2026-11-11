@@ -1,13 +1,13 @@
 use std::sync::OnceLock;
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::extract::FromRequestParts;
+use axum::http::HeaderMap;
 use axum::http::header::COOKIE;
 use axum::http::request::Parts;
-use axum::http::HeaderMap;
 use paracord_shared::User;
-use rusqlite::{Connection, OptionalExtension};
+use sqlx::MySqlConnection;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -15,6 +15,19 @@ use crate::util::{now_ms, sha256_hex};
 
 pub const SESSION_COOKIE: &str = "paracord_session";
 pub const SESSION_DAYS: i64 = 30;
+
+/// id, username, display_name, avatar_hue
+pub type UserRow = (String, String, String, i64);
+pub const USER_COLUMNS: &str = "u.id, u.username, u.display_name, u.avatar_hue";
+
+pub fn to_user((id, username, display_name, avatar_hue): UserRow) -> User {
+    User {
+        id,
+        username,
+        display_name,
+        avatar_hue,
+    }
+}
 
 pub fn hash_password(password: &str) -> ApiResult<String> {
     let salt = SaltString::encode_b64(&crate::util::random_bytes::<16>()).map_err(ApiError::internal)?;
@@ -64,28 +77,17 @@ pub fn session_token(headers: &HeaderMap) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-pub fn create_session(c: &Connection, user_id: &str) -> rusqlite::Result<String> {
+pub async fn create_session(c: &mut MySqlConnection, user_id: &str) -> ApiResult<String> {
     let token = crate::util::new_token();
     let now = now_ms();
-    c.execute(
-        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)",
-        (
-            sha256_hex(&token),
-            user_id,
-            now,
-            now + SESSION_DAYS * 24 * 60 * 60 * 1000,
-        ),
-    )?;
+    sqlx::query("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+        .bind(sha256_hex(&token))
+        .bind(user_id)
+        .bind(now)
+        .bind(now + SESSION_DAYS * 24 * 60 * 60 * 1000)
+        .execute(&mut *c)
+        .await?;
     Ok(token)
-}
-
-pub fn user_row(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<User> {
-    Ok(User {
-        id: row.get(start)?,
-        username: row.get(start + 1)?,
-        display_name: row.get(start + 2)?,
-        avatar_hue: row.get(start + 3)?,
-    })
 }
 
 /// The signed-in user. Add it to a handler's arguments to require sign-in.
@@ -96,19 +98,14 @@ impl FromRequestParts<AppState> for CurrentUser {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         let token = session_token(&parts.headers).ok_or(ApiError::Unauthorized)?;
-        let token_hash = sha256_hex(&token);
-        let user = state
-            .db(move |c| {
-                Ok(c.query_row(
-                    "SELECT u.id, u.username, u.display_name, u.avatar_hue
-                     FROM sessions s JOIN users u ON u.id = s.user_id
-                     WHERE s.token_hash = ?1 AND s.expires_at > ?2",
-                    (token_hash, now_ms()),
-                    |row| user_row(row, 0),
-                )
-                .optional()?)
-            })
-            .await?;
-        user.map(CurrentUser).ok_or(ApiError::Unauthorized)
+        let row: Option<UserRow> = sqlx::query_as(sql!(
+            "SELECT {USER_COLUMNS} FROM sessions s JOIN users u ON u.id = s.user_id
+             WHERE s.token_hash = ? AND s.expires_at > ?"
+        ))
+        .bind(sha256_hex(&token))
+        .bind(now_ms())
+        .fetch_optional(&state.pool)
+        .await?;
+        row.map(|r| CurrentUser(to_user(r))).ok_or(ApiError::Unauthorized)
     }
 }

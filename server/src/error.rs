@@ -56,8 +56,13 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<rusqlite::Error> for ApiError {
-    fn from(error: rusqlite::Error) -> Self {
+impl From<sqlx::Error> for ApiError {
+    fn from(error: sqlx::Error) -> Self {
         Self::internal(error)
     }
+}
+
+/// True for "duplicate entry" errors (a UNIQUE constraint was hit).
+pub fn is_duplicate(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(e) if e.is_unique_violation())
 }

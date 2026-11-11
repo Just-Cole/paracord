@@ -10,15 +10,14 @@ use paracord_shared::{
     AuthRequest, AuthResponse, ServerEvent, UpdateMe, User, check_password, clean_display_name,
     normalize_username,
 };
-use rusqlite::OptionalExtension;
 
 use super::communities::create_community;
-use crate::access::{community_member_ids, related_user_ids};
+use crate::access::{community_member_ids, home_community, related_user_ids};
 use crate::auth::{
-    CurrentUser, clear_cookie, create_session, dummy_hash, hash_password, session_cookie,
-    session_token, verify_password,
+    CurrentUser, USER_COLUMNS, UserRow, clear_cookie, create_session, dummy_hash, hash_password,
+    session_cookie, session_token, to_user, verify_password,
 };
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, is_duplicate};
 use crate::state::AppState;
 use crate::util::{client_ip, is_https, new_id, now_ms, random_hue, sha256_hex};
 
@@ -43,59 +42,65 @@ pub async fn register(
         Some(name) if !name.is_empty() => clean_display_name(name).map_err(ApiError::bad)?,
         _ => username.clone(),
     };
+    let taken = || ApiError::Conflict("That username is taken.".into());
+
+    let mut c = state.conn().await?;
+    let exists: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
+        .bind(&username)
+        .fetch_optional(&mut *c)
+        .await?;
+    if exists.is_some() {
+        return Err(taken());
+    }
+    drop(c);
+
     let password = body.password;
     let hash = tokio::task::spawn_blocking(move || hash_password(&password))
         .await
         .map_err(ApiError::internal)??;
 
-    let (user, token, home) = state
-        .db(move |c| {
-            let tx = c.transaction()?;
-            let taken = tx
-                .query_row("SELECT 1 FROM users WHERE username = ?1", [&username], |_| Ok(()))
-                .optional()?
-                .is_some();
-            if taken {
-                return Err(ApiError::Conflict("That username is taken.".into()));
-            }
-            let user = User {
-                id: new_id(),
-                username,
-                display_name,
-                avatar_hue: random_hue(),
-            };
-            let now = now_ms();
-            tx.execute(
-                "INSERT INTO users (id, username, display_name, password_hash, avatar_hue, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                (&user.id, &user.username, &user.display_name, &hash, user.avatar_hue, now),
-            )?;
-            // Everyone joins the first community. The very first account creates it.
-            let home: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM communities ORDER BY created_at, id LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let home = match home {
-                Some(id) => {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO members (community_id, user_id, joined_at) VALUES (?1, ?2, ?3)",
-                        (&id, &user.id, now),
-                    )?;
-                    id
-                }
-                None => create_community(&tx, &user.id, "Paracord", &["general", "introductions"])?,
-            };
-            let token = create_session(&tx, &user.id)?;
-            tx.commit()?;
-            Ok((user, token, home))
-        })
-        .await?;
+    let user = User {
+        id: new_id(),
+        username,
+        display_name,
+        avatar_hue: random_hue(),
+    };
+    let now = now_ms();
+    let mut tx = state.pool.begin().await?;
+    let inserted = sqlx::query(
+        "INSERT INTO users (id, username, display_name, password_hash, avatar_hue, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&user.id)
+    .bind(&user.username)
+    .bind(&user.display_name)
+    .bind(&hash)
+    .bind(user.avatar_hue)
+    .bind(now)
+    .execute(&mut *tx)
+    .await;
+    match inserted {
+        Err(error) if is_duplicate(&error) => return Err(taken()),
+        other => other?,
+    };
+    // Everyone joins the first community. The very first account creates it.
+    let home = match home_community(&mut tx).await? {
+        Some(id) => {
+            sqlx::query("INSERT IGNORE INTO members (community_id, user_id, joined_at) VALUES (?, ?, ?)")
+                .bind(&id)
+                .bind(&user.id)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+            id
+        }
+        None => create_community(&mut tx, &user.id, "Paracord", &["general", "introductions"]).await?,
+    };
+    let token = create_session(&mut tx, &user.id).await?;
+    tx.commit().await?;
 
-    let home_id = home.clone();
-    let members = state.db(move |c| Ok(community_member_ids(c, &home_id)?)).await?;
+    let mut c = state.conn().await?;
+    let members = community_member_ids(&mut c, &home).await?;
     state.hub.send(&members, &ServerEvent::MembersChanged { community_id: home });
 
     let cookie = session_cookie(&token, is_https(&state.cfg, &headers, &peer));
@@ -109,35 +114,30 @@ pub async fn login(
     Json(body): Json<AuthRequest>,
 ) -> ApiResult<Response> {
     limit_auth(&state, &headers, &peer)?;
-    let wrong = || ApiError::BadRequest("That username and password don't match.".into());
     let username = normalize_username(&body.username).unwrap_or_default();
 
-    let found: Option<(User, String)> = state
-        .db(move |c| {
-            Ok(c.query_row(
-                "SELECT id, username, display_name, avatar_hue, password_hash FROM users WHERE username = ?1",
-                [&username],
-                |row| Ok((crate::auth::user_row(row, 0)?, row.get::<_, String>(4)?)),
-            )
-            .optional()?)
-        })
-        .await?;
+    let found: Option<(String, String, String, i64, String)> = sqlx::query_as(sql!(
+        "SELECT {USER_COLUMNS}, u.password_hash FROM users u WHERE u.username = ?"
+    ))
+    .bind(&username)
+    .fetch_optional(&state.pool)
+    .await?;
 
     let password = body.password;
     let stored = found
         .as_ref()
-        .map(|(_, hash)| hash.clone())
+        .map(|row| row.4.clone())
         .unwrap_or_else(|| dummy_hash().to_string());
     let ok = tokio::task::spawn_blocking(move || verify_password(&password, &stored))
         .await
         .map_err(ApiError::internal)?;
     let user = match found {
-        Some((user, _)) if ok => user,
-        _ => return Err(wrong()),
+        Some((id, username, display_name, hue, _)) if ok => to_user((id, username, display_name, hue) as UserRow),
+        _ => return Err(ApiError::bad("That username and password don't match.")),
     };
 
-    let user_id = user.id.clone();
-    let token = state.db(move |c| Ok(create_session(c, &user_id)?)).await?;
+    let mut c = state.conn().await?;
+    let token = create_session(&mut c, &user.id).await?;
     let cookie = session_cookie(&token, is_https(&state.cfg, &headers, &peer));
     Ok(([(SET_COOKIE, cookie)], Json(AuthResponse { user })).into_response())
 }
@@ -148,12 +148,9 @@ pub async fn logout(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     if let Some(token) = session_token(&headers) {
-        let hash = sha256_hex(&token);
-        state
-            .db(move |c| {
-                c.execute("DELETE FROM sessions WHERE token_hash = ?1", [hash])?;
-                Ok(())
-            })
+        sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+            .bind(sha256_hex(&token))
+            .execute(&state.pool)
             .await?;
     }
     let cookie = clear_cookie(is_https(&state.cfg, &headers, &peer));
@@ -171,16 +168,13 @@ pub async fn update_me(
 ) -> ApiResult<Json<User>> {
     let display_name = clean_display_name(&body.display_name).map_err(ApiError::bad)?;
     let updated = User { display_name, ..user };
-    let row = updated.clone();
-    let audience = state
-        .db(move |c| {
-            c.execute(
-                "UPDATE users SET display_name = ?1 WHERE id = ?2",
-                (&row.display_name, &row.id),
-            )?;
-            Ok(related_user_ids(c, &row.id)?)
-        })
+    let mut c = state.conn().await?;
+    sqlx::query("UPDATE users SET display_name = ? WHERE id = ?")
+        .bind(&updated.display_name)
+        .bind(&updated.id)
+        .execute(&mut *c)
         .await?;
+    let audience = related_user_ids(&mut c, &updated.id).await?;
     state.hub.send(&audience, &ServerEvent::UserUpdated { user: updated.clone() });
     Ok(Json(updated))
 }
