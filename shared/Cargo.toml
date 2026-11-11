@@ -1,0 +1,12 @@
+[package]
+name = "paracord-shared"
+description = "Types and rules shared by the Paracord server and web client."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

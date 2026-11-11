@@ -1,0 +1,27 @@
+[package]
+name = "paracord-web"
+description = "Paracord web client (Leptos, compiled to WebAssembly)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+paracord-shared.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+console_error_panic_hook = "0.1"
+gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
+js-sys = "0.3"
+leptos = { version = "0.8", features = ["csr"] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "CloseEvent",
+    "Event",
+    "HtmlDivElement",
+    "HtmlTextAreaElement",
+    "KeyboardEvent",
+    "Location",
+    "MessageEvent",
+    "WebSocket",
+    "Window",
+] }

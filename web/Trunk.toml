@@ -1,0 +1,9 @@
+[build]
+target = "index.html"
+dist = "dist"
+filehash = true
+
+[watch]
+# Rebuild when the shared types change too.
+watch = [".", "../shared"]
+ignore = ["dist"]

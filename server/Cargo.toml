@@ -1,0 +1,29 @@
+[package]
+name = "paracord-server"
+description = "Paracord server: API, real-time WebSocket and the embedded web client."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "paracord"
+path = "src/main.rs"
+
+[dependencies]
+paracord-shared.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+getrandom = "0.3"
+hex = "0.4"
+mime_guess = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+rust-embed = "8"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.7.1", features = ["compression-gzip", "compression-br"] }

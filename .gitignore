@@ -1,0 +1,8 @@
+/target/
+/data/
+/web/dist/
+/release/
+.env
+*.db
+*.db-wal
+*.db-shm

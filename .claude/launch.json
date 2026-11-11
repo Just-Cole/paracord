@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "paracord",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "-p", "paracord-server"],
+      "port": 3000
+    }
+  ]
+}

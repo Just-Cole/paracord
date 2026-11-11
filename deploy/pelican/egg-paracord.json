@@ -1,0 +1,92 @@
+{
+    "_comment": "Pelican/Pterodactyl egg for Paracord. Import it in the admin area under Eggs > Import.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": "https://raw.githubusercontent.com/Just-Cole/paracord/main/deploy/pelican/egg-paracord.json"
+    },
+    "exported_at": "2026-11-11T00:00:00+00:00",
+    "name": "Paracord",
+    "author": "admin@example.com",
+    "description": "Paracord community chat. Installing (or Reinstalling) clones the git repo and compiles it on the node; the server then runs one Rust binary that serves the site, API and WebSocket on its port. Data lives in data/paracord.db and survives reinstalls.",
+    "features": null,
+    "docker_images": {
+        "Debian": "ghcr.io/parkervcp/yolks:debian"
+    },
+    "file_denylist": [],
+    "startup": "./paracord",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Paracord listening on\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Paracord install script for Pelican. Runs in the rust:1-bookworm installer\n# container with the server's files mounted at /mnt/server.\n#\n# It clones the repo, builds the web client and a static Linux binary, and\n# copies only the binary into the server. data/ (the database) is never touched,\n# so \"Reinstall\" is how you update.\nset -euo pipefail\n\nREPO=\"${GIT_ADDRESS:-https://github.com/Just-Cole/paracord.git}\"\nBRANCH=\"${BRANCH:-main}\"\nTRUNK_VERSION=\"0.22.1\"\nBUILD=/tmp/paracord-build\n\ncase \"$(uname -m)\" in\n    x86_64) TARGET=x86_64-unknown-linux-musl ;;\n    aarch64) TARGET=aarch64-unknown-linux-musl ;;\n    *) echo \"Unsupported CPU: $(uname -m)\"; exit 1 ;;\nesac\n\necho \"==> Installing build tools\"\napt-get update -qq\napt-get install -y -qq --no-install-recommends git musl-tools ca-certificates curl >/dev/null\nrustup target add wasm32-unknown-unknown \"$TARGET\"\n\nif ! command -v trunk >/dev/null; then\n    TRUNK_URL=\"https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-$(uname -m)-unknown-linux-gnu.tar.gz\"\n    if curl -fsSL \"$TRUNK_URL\" | tar -xz -C /usr/local/bin trunk 2>/dev/null; then\n        echo \"Downloaded trunk ${TRUNK_VERSION}\"\n    else\n        echo \"No prebuilt trunk for this machine; compiling it (takes a few minutes)\"\n        cargo install trunk --locked --version \"$TRUNK_VERSION\"\n    fi\nfi\n\necho \"==> Fetching ${REPO} (${BRANCH})\"\nrm -rf \"$BUILD\"\ngit clone --depth 1 --branch \"$BRANCH\" \"$REPO\" \"$BUILD\"\ncd \"$BUILD\"\n\n# Keep memory use modest; install containers often get 1-2 GB.\nexport CARGO_BUILD_JOBS=\"${CARGO_BUILD_JOBS:-2}\"\nexport CARGO_PROFILE_RELEASE_LTO=thin\nexport CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16\n\necho \"==> Building the web client\"\n(cd web && trunk build --release)\n\necho \"==> Building the server\"\ncargo build --release --locked -p paracord-server --target \"$TARGET\"\n\necho \"==> Installing\"\nmkdir -p /mnt/server/data\ninstall -m 755 \"target/$TARGET/release/paracord\" /mnt/server/paracord\ngit rev-parse --short HEAD > /mnt/server/VERSION\nrm -rf \"$BUILD\"\necho \"Paracord $(cat /mnt/server/VERSION) installed.\"\n",
+            "container": "rust:1-bookworm",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Git repository",
+            "description": "Where Paracord's source is cloned from on install.",
+            "env_variable": "GIT_ADDRESS",
+            "default_value": "https://github.com/Just-Cole/paracord.git",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Git branch",
+            "description": "Branch to build. Reinstall the server to update to its latest commit.",
+            "env_variable": "BRANCH",
+            "default_value": "main",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:100",
+            "field_type": "text"
+        },
+        {
+            "name": "Trusted proxy IPs",
+            "description": "Comma-separated IPs whose X-Forwarded-For / CF-Connecting-IP headers are trusted. Set this to the address cloudflared or nginx connects from (on Pelican that is usually the Docker gateway, 172.18.0.1).",
+            "env_variable": "TRUST_PROXY",
+            "default_value": "172.18.0.1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Public site address",
+            "description": "The https:// address people use, e.g. https://paracord.example.com. Comma-separate several. Lets the server accept changes from that site even if the proxy rewrites the Host header.",
+            "env_variable": "PUBLIC_ORIGINS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        },
+        {
+            "name": "Secure cookies",
+            "description": "1 marks the sign-in cookie as HTTPS-only. Use 1 whenever the site is served over HTTPS (for example through a Cloudflare Tunnel).",
+            "env_variable": "SECURE_COOKIES",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Log level",
+            "description": "How much the console shows: error, warn, info or debug.",
+            "env_variable": "RUST_LOG",
+            "default_value": "paracord=info",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        }
+    ]
+}
